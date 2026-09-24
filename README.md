@@ -1,0 +1,2 @@
+# investing_series_1500_thumbnail_v2
+thumbnails

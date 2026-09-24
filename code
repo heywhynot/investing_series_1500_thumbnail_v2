@@ -1,0 +1,709 @@
+import math
+import os
+import platform
+import subprocess
+from datetime import datetime
+import tkinter as tk
+from tkinter import colorchooser, filedialog, messagebox, ttk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+
+FONT_MAP = {
+    # --- High-Impact Finance & Modern Sans ---
+    "Impact (Finance Classic)": ["impact.ttf", "Impact.ttf", "Impact"],
+    "Arial Black (Bold Headline)": ["ariblk.ttf", "arialbd.ttf", "Arial Black.ttf", "Arial Black"],
+    "Trebuchet MS Bold (Clean & Punchy)": ["trebucbd.ttf", "Trebuchet MS Bold.ttf", "trebuc.ttf"],
+    "Segoe UI Bold (Sleek Modern)": ["segoeuib.ttf", "Segoe UI Bold.ttf", "segoeui.ttf"],
+    "Bahnschrift (DIN Tech/Numbers)": ["bahnschrift.ttf", "Bahnschrift.ttf", "bahnschrift"],
+    "Consolas Bold (Ticker/Terminal)": ["consolab.ttf", "Consolas Bold.ttf", "consola.ttf"],
+    "Georgia Bold (Classic Editorial)": ["georgiab.ttf", "Georgia Bold.ttf", "georgia.ttf"]
+}
+
+
+class ScrollableFrame(ttk.Frame):
+    """Scrollable container so all configuration controls fit on any screen resolution."""
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        
+        self.scrollable_frame.bind("<Enter>", self._bind_mousewheel)
+        self.scrollable_frame.bind("<Leave>", self._unbind_mousewheel)
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _bind_mousewheel(self, event):
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, event):
+        self.canvas.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
+class InvestmentThumbnailApp:
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("20-Year Investment Journey: Thumbnail Studio")
+        self.root.geometry("1380x900")
+        self.root.resizable(True, True)
+
+        # File paths
+        self.bg_path = tk.StringVar()
+        self.head_path = tk.StringVar()
+
+        # ==========================================
+        # Exact Screenshot Defaults
+        # ==========================================
+        # 1. Main Static Title Banner
+        self.use_series_title = tk.BooleanVar(value=True)
+        self.series_title_text = tk.StringVar(value="INVESTING $1500 / MONTH FOR 20 YEARS")
+        self.series_title_color = "#FFFFFF"
+        self.series_banner_color = "#0D6EFD"
+
+        # 2. Monthly Update Headline
+        self.use_update_title = tk.BooleanVar(value=True)
+        self.update_title_text = tk.StringVar(value="SEPTEMBER 2026 UPDATE")
+        self.update_title_color = "#FFE600"
+        self.update_border_color = "#000000"
+
+        # 3. Time Horizon Tracker (Neon Pink)
+        self.use_tracker = tk.BooleanVar(value=True)
+        self.year_text = tk.StringVar(value="0 YEARS")
+        self.month_text = tk.StringVar(value="1 MONTH")
+        self.tracker_bg_color = "#111827"
+        self.tracker_pink_color = "#FF1493"
+
+        # 4. Amount Invested & Portfolio Value Callout Badge
+        self.use_metric_badge = tk.BooleanVar(value=True)
+        self.invested_text = tk.StringVar(value="INVESTED: $1,500")
+        self.metric_label = tk.StringVar(value="PORTFOLIO VALUE:")
+        self.metric_value = tk.StringVar(value="$18,450 (+12.4%)")
+        self.is_loss_red = tk.BooleanVar(value=False)
+        self.metric_green = "#00E676"
+        self.metric_red = "#FF1744"
+
+        # 5. Visuals & Headshot
+        self.draw_bull_arrow = tk.BooleanVar(value=False)
+        self.use_head = tk.BooleanVar(value=True)
+        self.flip_head = tk.BooleanVar(value=False)
+        self.head_align_left = tk.BooleanVar(value=False)
+
+        # Global Font Choice
+        self.font_choice = tk.StringVar(value="Impact (Finance Classic)")
+
+        # Save & Preview Tracking
+        self.last_saved_dir = None
+        self.preview_image_tk = None
+        self.current_composite = None
+        self.current_preview_w = 768
+        self.current_preview_h = 432
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = ttk.LabelFrame(main_frame, text=" Portfolio Thumbnail Settings ", padding=5)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(0, 10))
+
+        right_frame = ttk.LabelFrame(main_frame, text=" Live Preview (Auto-Scaled) ", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        self.scroll_pane = ScrollableFrame(left_frame)
+        self.scroll_pane.pack(fill=tk.BOTH, expand=True)
+        ctrl_frame = self.scroll_pane.scrollable_frame
+
+        # ==========================================
+        # 1. Base Image / Chart Background
+        # ==========================================
+        bg_sec = ttk.LabelFrame(ctrl_frame, text=" 1. Background (Chart / Stock Grid) ", padding=6)
+        bg_sec.pack(fill=tk.X, pady=4)
+        bg_row = ttk.Frame(bg_sec)
+        bg_row.pack(fill=tk.X)
+        ttk.Entry(bg_row, textvariable=self.bg_path, width=28).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(bg_row, text="Browse...", command=self.browse_bg).pack(side=tk.LEFT)
+
+        # ==========================================
+        # 2. Global Font Selector
+        # ==========================================
+        font_sec = ttk.Frame(ctrl_frame)
+        font_sec.pack(fill=tk.X, pady=4)
+        ttk.Label(font_sec, text="Global Typography Font:").pack(side=tk.LEFT)
+        f_combo = ttk.Combobox(font_sec, textvariable=self.font_choice, values=list(FONT_MAP.keys()), state="readonly", width=22)
+        f_combo.pack(side=tk.RIGHT)
+        f_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
+
+        # ==========================================
+        # 3. Main Series Title: "Investing $1500 / Month for 20 Years"
+        # ==========================================
+        series_sec = ttk.LabelFrame(ctrl_frame, text=" 2. Static Series Title Banner ", padding=6)
+        series_sec.pack(fill=tk.X, pady=5)
+
+        ttk.Checkbutton(series_sec, text="Enable Series Banner", variable=self.use_series_title, command=self.update_preview).pack(anchor=tk.W)
+        s_entry = ttk.Entry(series_sec, textvariable=self.series_title_text, font=("Arial", 10, "bold"))
+        s_entry.pack(fill=tk.X, pady=3)
+        s_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        c_row1 = ttk.Frame(series_sec)
+        c_row1.pack(fill=tk.X, pady=2)
+        self.btn_s_color = tk.Button(
+            c_row1, text="Text Color", bg=self.series_title_color, fg="#000", font=("Arial", 8, "bold"),
+            command=lambda: self.pick_color("series_title_color", self.btn_s_color)
+        )
+        self.btn_s_color.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        self.btn_s_banner = tk.Button(
+            c_row1, text="Banner Color", bg=self.series_banner_color, fg="#FFF", font=("Arial", 8, "bold"),
+            command=lambda: self.pick_color("series_banner_color", self.btn_s_banner)
+        )
+        self.btn_s_banner.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
+        ttk.Label(series_sec, text="Banner Y Position:").pack(anchor=tk.W)
+        self.series_y_slider = ttk.Scale(series_sec, from_=10, to=400, value=35, command=self.on_slider_move)
+        self.series_y_slider.pack(fill=tk.X)
+
+        # ==========================================
+        # 4. Monthly Update Headline
+        # ==========================================
+        update_sec = ttk.LabelFrame(ctrl_frame, text=" 3. Monthly Update Headline ", padding=6)
+        update_sec.pack(fill=tk.X, pady=5)
+
+        ttk.Checkbutton(update_sec, text="Enable Update Headline", variable=self.use_update_title, command=self.update_preview).pack(anchor=tk.W)
+        u_entry = ttk.Entry(update_sec, textvariable=self.update_title_text, font=("Arial", 10, "bold"))
+        u_entry.pack(fill=tk.X, pady=3)
+        u_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        c_row2 = ttk.Frame(update_sec)
+        c_row2.pack(fill=tk.X, pady=2)
+        self.btn_u_color = tk.Button(
+            c_row2, text="Headline Color", bg=self.update_title_color, fg="#000", font=("Arial", 8, "bold"),
+            command=lambda: self.pick_color("update_title_color", self.btn_u_color)
+        )
+        self.btn_u_color.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        self.btn_u_border = tk.Button(
+            c_row2, text="Outline Border", bg=self.update_border_color, fg="#FFF", font=("Arial", 8, "bold"),
+            command=lambda: self.pick_color("update_border_color", self.btn_u_border)
+        )
+        self.btn_u_border.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
+        ttk.Label(update_sec, text="Headline Font Size:").pack(anchor=tk.W)
+        self.update_size_slider = ttk.Scale(update_sec, from_=40, to=180, value=145, command=self.on_slider_move)
+        self.update_size_slider.pack(fill=tk.X)
+
+        ttk.Label(update_sec, text="Headline Y Position:").pack(anchor=tk.W)
+        self.update_y_slider = ttk.Scale(update_sec, from_=50, to=600, value=125, command=self.on_slider_move)
+        self.update_y_slider.pack(fill=tk.X)
+
+        # ==========================================
+        # 5. Timeline Progress Badges (Neon Pink Theme)
+        # ==========================================
+        tracker_sec = ttk.LabelFrame(ctrl_frame, text=" 4. Progress Tracker (Neon Pink Theme) ", padding=6)
+        tracker_sec.pack(fill=tk.X, pady=5)
+
+        ttk.Checkbutton(tracker_sec, text="Display Year/Month Badges", variable=self.use_tracker, command=self.update_preview).pack(anchor=tk.W)
+        
+        t_row = ttk.Frame(tracker_sec)
+        t_row.pack(fill=tk.X, pady=2)
+        t_left = ttk.Frame(t_row)
+        t_left.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        ttk.Label(t_left, text="Year Text:").pack(anchor=tk.W)
+        y_entry = ttk.Entry(t_left, textvariable=self.year_text)
+        y_entry.pack(fill=tk.X)
+        y_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        t_right = ttk.Frame(t_row)
+        t_right.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(2, 0))
+        ttk.Label(t_right, text="Month Text:").pack(anchor=tk.W)
+        m_entry = ttk.Entry(t_right, textvariable=self.month_text)
+        m_entry.pack(fill=tk.X)
+        m_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        ttk.Label(tracker_sec, text="Tracker Y Position:").pack(anchor=tk.W)
+        self.tracker_y_slider = ttk.Scale(tracker_sec, from_=100, to=900, value=235, command=self.on_slider_move)
+        self.tracker_y_slider.pack(fill=tk.X)
+
+        # ==========================================
+        # 6. Portfolio Stat Card: Invested & Value
+        # ==========================================
+        metric_sec = ttk.LabelFrame(ctrl_frame, text=" 5. Financial Callout (Invested & Value) ", padding=6)
+        metric_sec.pack(fill=tk.X, pady=5)
+
+        m_top = ttk.Frame(metric_sec)
+        m_top.pack(fill=tk.X, pady=2)
+        ttk.Checkbutton(m_top, text="Show Portfolio Stat Card", variable=self.use_metric_badge, command=self.update_preview).pack(side=tk.LEFT)
+        ttk.Checkbutton(m_top, text="🔻 Market Down (Red Color)", variable=self.is_loss_red, command=self.update_preview).pack(side=tk.RIGHT)
+
+        inv_frame = ttk.Frame(metric_sec)
+        inv_frame.pack(fill=tk.X, pady=3)
+        ttk.Label(inv_frame, text="Amount Invested (Above Portfolio Value):").pack(anchor=tk.W)
+        inv_entry = ttk.Entry(inv_frame, textvariable=self.invested_text, font=("Arial", 9, "bold"))
+        inv_entry.pack(fill=tk.X)
+        inv_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        m_row = ttk.Frame(metric_sec)
+        m_row.pack(fill=tk.X, pady=2)
+        m_sub1 = ttk.Frame(m_row)
+        m_sub1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        ttk.Label(m_sub1, text="Value Label:").pack(anchor=tk.W)
+        l_entry = ttk.Entry(m_sub1, textvariable=self.metric_label)
+        l_entry.pack(fill=tk.X)
+        l_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        m_sub2 = ttk.Frame(m_row)
+        m_sub2.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(2, 0))
+        ttk.Label(m_sub2, text="Portfolio Value / Return:").pack(anchor=tk.W)
+        v_entry = ttk.Entry(m_sub2, textvariable=self.metric_value)
+        v_entry.pack(fill=tk.X)
+        v_entry.bind("<KeyRelease>", lambda e: self.on_slider_move(None))
+
+        ttk.Label(metric_sec, text="Badge Y Position:").pack(anchor=tk.W)
+        self.metric_y_slider = ttk.Scale(metric_sec, from_=200, to=950, value=880, command=self.on_slider_move)
+        self.metric_y_slider.pack(fill=tk.X)
+
+        # ==========================================
+        # 7. Visual Effects & Headshot
+        # ==========================================
+        vis_sec = ttk.LabelFrame(ctrl_frame, text=" 6. Visual Effects & Headshot ", padding=6)
+        vis_sec.pack(fill=tk.X, pady=5)
+
+        ttk.Checkbutton(vis_sec, text="Draw Green Upward Bullish Chart Arrow", variable=self.draw_bull_arrow, command=self.update_preview).pack(anchor=tk.W)
+        
+        ttk.Separator(vis_sec, orient="horizontal").pack(fill=tk.X, pady=4)
+        ttk.Checkbutton(vis_sec, text="Enable Creator Headshot", variable=self.use_head, command=self.update_preview).pack(anchor=tk.W)
+        
+        head_row = ttk.Frame(vis_sec)
+        head_row.pack(fill=tk.X, pady=2)
+        ttk.Entry(head_row, textvariable=self.head_path, width=22).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(head_row, text="Browse...", command=self.browse_head).pack(side=tk.LEFT)
+
+        h_opts = ttk.Frame(vis_sec)
+        h_opts.pack(fill=tk.X, pady=2)
+        ttk.Checkbutton(h_opts, text="Flip Mirror", variable=self.flip_head, command=self.update_preview).pack(side=tk.LEFT)
+        ttk.Checkbutton(h_opts, text="Place on Left", variable=self.head_align_left, command=self.update_preview).pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(vis_sec, text="Headshot Height:").pack(anchor=tk.W)
+        self.head_scale_slider = ttk.Scale(vis_sec, from_=300, to=900, value=650, command=self.on_slider_move)
+        self.head_scale_slider.pack(fill=tk.X)
+
+        # ==========================================
+        # 8. Export Actions
+        # ==========================================
+        ttk.Separator(ctrl_frame, orient="horizontal").pack(fill=tk.X, pady=8)
+
+        self.auto_update_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctrl_frame, text="Auto-update preview on slider move", variable=self.auto_update_var).pack(fill=tk.X, pady=2)
+
+        btn_frame = ttk.Frame(ctrl_frame)
+        btn_frame.pack(fill=tk.X, pady=4)
+        ttk.Button(btn_frame, text="Update Preview", command=self.update_preview).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame, text="Save Investment Thumbnail (Full Res)", command=self.save_thumbnail).pack(fill=tk.X, pady=2)
+        self.open_folder_btn = ttk.Button(btn_frame, text="Open Saved Folder 📂", command=self.open_saved_folder)
+        self.open_folder_btn.pack(fill=tk.X, pady=2)
+
+        # --- Right Preview Canvas ---
+        self.preview_container = ttk.Frame(right_frame)
+        self.preview_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.preview_container.bind("<Configure>", self.on_container_resize)
+
+        self.preview_canvas = tk.Canvas(self.preview_container, bg="#12131C", highlightthickness=1)
+        self.preview_canvas.pack(anchor=tk.CENTER)
+
+        self.info_label = ttk.Label(
+            right_frame, 
+            text="Strategy Tips:\n"
+                 "• Neon Pink badges trigger immediate visual contrast against dark backgrounds.\n"
+                 "• Toggle 'Market Down (Red Color)' whenever reporting a pull-back month to stand out.\n"
+                 "• All thumbnails export in uncompressed native resolution.",
+            justify=tk.LEFT, 
+            wraplength=450
+        )
+        self.info_label.pack(anchor=tk.W, padx=10, pady=10, side=tk.BOTTOM)
+
+    def pick_color(self, attr_name, btn_widget):
+        current_val = getattr(self, attr_name)
+        chosen = colorchooser.askcolor(color=current_val, title="Select Color")[1]
+        if chosen:
+            setattr(self, attr_name, chosen)
+            btn_widget.config(bg=chosen)
+            r, g, b = int(chosen[1:3], 16), int(chosen[3:5], 16), int(chosen[5:7], 16)
+            btn_widget.config(fg="#000" if (r * 0.299 + g * 0.587 + b * 0.114) > 150 else "#FFF")
+            self.update_preview()
+
+    def get_font(self, font_name, size):
+        candidates = FONT_MAP.get(font_name, ["impact.ttf", "arialbd.ttf", "arial.ttf"])
+        for cand in candidates:
+            try:
+                return ImageFont.truetype(cand, int(size))
+            except Exception:
+                continue
+        try:
+            return ImageFont.truetype(font_name, int(size))
+        except Exception:
+            return ImageFont.load_default()
+
+    def on_container_resize(self, event):
+        if event.width < 100 or event.height < 100:
+            return
+
+        margin = 20
+        avail_w = event.width - (margin * 2)
+        avail_h = event.height - (margin * 2)
+
+        target_ratio = 16.0 / 9.0
+        current_ratio = avail_w / avail_h
+
+        if current_ratio > target_ratio:
+            new_h = avail_h
+            new_w = int(avail_h * target_ratio)
+        else:
+            new_w = avail_w
+            new_h = int(avail_w / target_ratio)
+
+        if (self.current_preview_w != new_w) or (self.current_preview_h != new_h):
+            self.current_preview_w = new_w
+            self.current_preview_h = new_h
+            self.preview_canvas.config(width=new_w, height=new_h)
+            self.update_preview()
+
+    def on_slider_move(self, val):
+        if self.auto_update_var.get():
+            self.update_preview()
+
+    def browse_bg(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg *.webp *.bmp")])
+        if file_path:
+            self.bg_path.set(file_path)
+            self.update_preview()
+
+    def browse_head(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png *.jpg *.jpeg *.webp *.bmp")])
+        if file_path:
+            self.head_path.set(file_path)
+            self.use_head.set(True)
+            self.update_preview()
+
+    def apply_chroma_key(self, img, sensitivity=45):
+        img = img.convert("RGBA")
+        datas = img.getdata()
+        new_data = []
+        for item in datas:
+            r, g, b, a = item
+            if g > r + sensitivity and g > b + sensitivity and g > 50:
+                new_data.append((r, g, b, 0))
+            else:
+                new_data.append(item)
+        img.putdata(new_data)
+        return img
+
+    def generate_composite(self):
+        # 1. Base Image Canvas
+        if not self.bg_path.get():
+            bg = Image.new("RGBA", (1920, 1080), (10, 14, 26, 255))
+            draw_bg = ImageDraw.Draw(bg)
+            for x in range(0, 1920, 120):
+                draw_bg.line([(x, 0), (x, 1080)], fill=(20, 28, 48, 255), width=1)
+            for y in range(0, 1080, 100):
+                draw_bg.line([(0, y), (1920, y)], fill=(20, 28, 48, 255), width=1)
+        else:
+            try:
+                bg = Image.open(self.bg_path.get()).convert("RGBA")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load background:\n{e}")
+                return None
+
+        bg_w, bg_h = bg.size
+        scale_factor = bg_h / 1080.0
+        draw = ImageDraw.Draw(bg)
+
+        # ==========================================
+        # 2. Bullish Growth Compounding Curve
+        # ==========================================
+        if self.draw_bull_arrow.get():
+            curve_points = []
+            start_x = int(100 * scale_factor)
+            end_x = int(bg_w * 0.75)
+            base_curve_y = int(bg_h * 0.90)
+            peak_y = int(bg_h * 0.38)
+            
+            steps = 40
+            for i in range(steps + 1):
+                t = i / steps
+                cx = start_x + t * (end_x - start_x)
+                cy = base_curve_y - (base_curve_y - peak_y) * (math.pow(t, 2.4))
+                curve_points.append((int(cx), int(cy)))
+
+            thick_w = int(12 * scale_factor)
+            draw.line(curve_points, fill=(0, 230, 118, 160), width=thick_w + int(8 * scale_factor))
+            draw.line(curve_points, fill="#00E676", width=thick_w)
+
+            ax, ay = curve_points[-1]
+            arrow_size = int(32 * scale_factor)
+            draw.polygon([
+                (ax, ay - int(arrow_size * 0.6)),
+                (ax + int(arrow_size * 0.8), ay + int(arrow_size * 0.5)),
+                (ax - int(arrow_size * 0.4), ay + int(arrow_size * 0.3))
+            ], fill="#00E676")
+
+        # ==========================================
+        # 3. Creator Headshot
+        # ==========================================
+        if self.use_head.get() and self.head_path.get():
+            try:
+                raw_head = Image.open(self.head_path.get())
+                orig_w, orig_h = raw_head.size
+                target_h = int(self.head_scale_slider.get() * scale_factor)
+                target_w = int(target_h * (orig_w / orig_h))
+
+                resized_head = raw_head.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                keyed_head = self.apply_chroma_key(resized_head)
+
+                if self.flip_head.get():
+                    keyed_head = keyed_head.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+
+                if self.head_align_left.get():
+                    hx = int(40 * scale_factor)
+                else:
+                    hx = bg_w - target_w - int(20 * scale_factor)
+
+                hy = bg_h - target_h
+                bg.paste(keyed_head, (int(hx), int(hy)), keyed_head)
+            except Exception:
+                pass
+
+        # ==========================================
+        # 4. Top Series Badge ("INVESTING $1500 / MONTH...")
+        # ==========================================
+        if self.use_series_title.get():
+            s_text = self.series_title_text.get().strip().upper()
+            if s_text:
+                s_font = self.get_font("Trebuchet MS Bold (Clean & Punchy)", int(42 * scale_factor))
+                bbox = draw.textbbox((0, 0), s_text, font=s_font)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+                pad_x = int(32 * scale_factor)
+                pad_y = int(14 * scale_factor)
+                banner_y = int(self.series_y_slider.get() * scale_factor)
+                banner_x = int(60 * scale_factor)
+
+                pill_rect = (banner_x, banner_y, banner_x + tw + pad_x * 2, banner_y + th + pad_y * 2)
+                draw.rounded_rectangle(
+                    pill_rect, 
+                    radius=int(14 * scale_factor), 
+                    fill=self.series_banner_color, 
+                    outline="#FFE600", 
+                    width=int(3 * scale_factor)
+                )
+
+                tx = banner_x + pad_x - bbox[0]
+                ty = banner_y + pad_y - bbox[1]
+                draw.text((tx, ty), s_text, font=s_font, fill=self.series_title_color)
+
+        # ==========================================
+        # 5. Monthly Update Headline ("SEPTEMBER 2026 UPDATE")
+        # ==========================================
+        if self.use_update_title.get():
+            u_text = self.update_title_text.get().strip().upper()
+            if u_text:
+                u_size = int(self.update_size_slider.get() * scale_factor)
+                u_font = self.get_font(self.font_choice.get(), u_size)
+                stroke_w = int(10 * scale_factor)
+                shadow_d = int(8 * scale_factor)
+
+                bbox = draw.textbbox((0, 0), u_text, font=u_font, stroke_width=stroke_w)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+
+                ux = int(60 * scale_factor) - bbox[0]
+                uy = int(self.update_y_slider.get() * scale_factor) - bbox[1]
+
+                # Drop Shadow
+                draw.text((ux + shadow_d, uy + shadow_d), u_text, font=u_font, fill="#000000", stroke_width=stroke_w, stroke_fill="#000000")
+                # Main Headline
+                draw.text((ux, uy), u_text, font=u_font, fill=self.update_title_color, stroke_width=stroke_w, stroke_fill=self.update_border_color)
+
+        # ==========================================
+        # 6. Timeline Tracker Badges (Neon Pink Theme)
+        # ==========================================
+        if self.use_tracker.get():
+            y_str = self.year_text.get().strip().upper()
+            m_str = self.month_text.get().strip().upper()
+
+            t_font = self.get_font("Bahnschrift (DIN Tech/Numbers)", int(46 * scale_factor))
+            t_base_y = int(self.tracker_y_slider.get() * scale_factor)
+            cur_x = int(60 * scale_factor)
+
+            # Year Badge - Neon Pink
+            if y_str:
+                y_box = draw.textbbox((0, 0), y_str, font=t_font)
+                yw = y_box[2] - y_box[0]
+                yh = y_box[3] - y_box[1]
+                ypad = int(18 * scale_factor)
+                
+                rect_y = (cur_x, t_base_y, cur_x + yw + ypad * 2, t_base_y + yh + ypad * 2)
+                draw.rounded_rectangle(
+                    rect_y, 
+                    radius=int(10 * scale_factor), 
+                    fill=self.tracker_bg_color, 
+                    outline=self.tracker_pink_color, 
+                    width=int(3 * scale_factor)
+                )
+                draw.text((cur_x + ypad - y_box[0], t_base_y + ypad - y_box[1]), y_str, font=t_font, fill=self.tracker_pink_color)
+                cur_x += yw + ypad * 2 + int(16 * scale_factor)
+
+            # Month Badge - Neon Pink
+            if m_str:
+                m_box = draw.textbbox((0, 0), m_str, font=t_font)
+                mw = m_box[2] - m_box[0]
+                mh = m_box[3] - m_box[1]
+                mpad = int(18 * scale_factor)
+
+                rect_m = (cur_x, t_base_y, cur_x + mw + mpad * 2, t_base_y + mh + mpad * 2)
+                draw.rounded_rectangle(
+                    rect_m, 
+                    radius=int(10 * scale_factor), 
+                    fill=self.tracker_bg_color, 
+                    outline=self.tracker_pink_color, 
+                    width=int(3 * scale_factor)
+                )
+                draw.text((cur_x + mpad - m_box[0], t_base_y + mpad - m_box[1]), m_str, font=t_font, fill=self.tracker_pink_color)
+
+        # ==========================================
+        # 7. Portfolio Value & Amount Invested Card
+        # ==========================================
+        if self.use_metric_badge.get():
+            theme_color = self.metric_red if self.is_loss_red.get() else self.metric_green
+
+            inv_str = self.invested_text.get().strip().upper()
+            m_label = self.metric_label.get().strip().upper()
+            m_val = self.metric_value.get().strip().upper()
+
+            inv_font = self.get_font("Bahnschrift (DIN Tech/Numbers)", int(36 * scale_factor))
+            lbl_font = self.get_font("Trebuchet MS Bold (Clean & Punchy)", int(30 * scale_factor))
+            val_font = self.get_font("Impact (Finance Classic)", int(58 * scale_factor))
+
+            inv_box = draw.textbbox((0, 0), inv_str, font=inv_font)
+            l_box = draw.textbbox((0, 0), m_label, font=lbl_font)
+            v_box = draw.textbbox((0, 0), m_val, font=val_font)
+
+            inv_w = (inv_box[2] - inv_box[0]) if inv_str else 0
+            inv_h = (inv_box[3] - inv_box[1]) if inv_str else 0
+
+            lbl_w = l_box[2] - l_box[0]
+            lbl_h = l_box[3] - l_box[1]
+
+            val_w = v_box[2] - v_box[0]
+            val_h = v_box[3] - v_box[1]
+
+            badge_w = max(inv_w, lbl_w, val_w) + int(48 * scale_factor)
+            extra_h = (inv_h + int(12 * scale_factor)) if inv_str else 0
+            badge_h = lbl_h + val_h + extra_h + int(48 * scale_factor)
+
+            bx = int(60 * scale_factor)
+            by = int(self.metric_y_slider.get() * scale_factor)
+
+            # High-contrast investment card
+            draw.rounded_rectangle(
+                (bx, by, bx + badge_w, by + badge_h),
+                radius=int(16 * scale_factor),
+                fill=(12, 18, 32, 245),
+                outline=theme_color,
+                width=int(4 * scale_factor)
+            )
+
+            cur_card_y = by + int(16 * scale_factor)
+
+            # 1. Amount Invested
+            if inv_str:
+                draw.text(
+                    (bx + int(24 * scale_factor) - inv_box[0], cur_card_y - inv_box[1]),
+                    inv_str, font=inv_font, fill="#FFFFFF"
+                )
+                cur_card_y += inv_h + int(10 * scale_factor)
+
+            # 2. Portfolio Label
+            draw.text(
+                (bx + int(24 * scale_factor) - l_box[0], cur_card_y - l_box[1]),
+                m_label, font=lbl_font, fill="#9CA3AF"
+            )
+            cur_card_y += lbl_h + int(4 * scale_factor)
+
+            # 3. Portfolio Value / Return
+            draw.text(
+                (bx + int(24 * scale_factor) - v_box[0], cur_card_y - v_box[1]),
+                m_val, font=val_font, fill=theme_color
+            )
+
+        return bg
+
+    def update_preview(self):
+        composite = self.generate_composite()
+        if composite:
+            self.current_composite = composite
+            w, h = int(self.current_preview_w), int(self.current_preview_h)
+            preview_img = composite.resize((w, h), Image.Resampling.LANCZOS)
+            self.preview_image_tk = ImageTk.PhotoImage(preview_img)
+            self.preview_canvas.delete("all")
+            self.preview_canvas.create_image(w // 2, h // 2, anchor=tk.CENTER, image=self.preview_image_tk)
+
+    def save_thumbnail(self):
+        if not self.current_composite:
+            self.update_preview()
+            if not self.current_composite:
+                messagebox.showwarning("Warning", "Nothing to save. Please load assets first.")
+                return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_filename = f"investment_thumbnail_{timestamp}.png"
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg")],
+            initialfile=default_filename,
+        )
+        if file_path:
+            try:
+                output_image = self.current_composite.convert("RGB")
+                output_image.save(file_path, quality=95)
+                self.last_saved_dir = os.path.dirname(file_path)
+                messagebox.showinfo("Success", f"Thumbnail successfully saved to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save image:\n{e}")
+
+    def open_saved_folder(self):
+        if self.last_saved_dir and os.path.exists(self.last_saved_dir):
+            try:
+                system_platform = platform.system()
+                if system_platform == "Windows":
+                    os.startfile(self.last_saved_dir)
+                elif system_platform == "Darwin":
+                    subprocess.Popen(["open", self.last_saved_dir])
+                else:
+                    subprocess.Popen(["xdg-open", self.last_saved_dir])
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not open directory:\n{e}")
+        else:
+            messagebox.showwarning("Warning", "No save folder registered yet. Please save a thumbnail first.")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = InvestmentThumbnailApp(root)
+    app.update_preview()
+    root.mainloop()
